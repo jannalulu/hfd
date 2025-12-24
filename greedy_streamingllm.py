@@ -196,7 +196,7 @@ class CLI_Config:
     num_gpus:int|None = None
     ctxlen:int = 2048
     micro_bsz:int = 32
-    max_iters:int = 1
+    max_iters:int = 4
     dataset_name:str = "robbiegwaldd/dclm-10B"
     model_path:str = 'Qwen/Qwen2-0.5B-Instruct' # FIXME - use 3b or make all this stuff configurable
     base_model_class_path:str = 'transformers.models.qwen2.modeling_qwen2.Qwen2ForCausalLM'
@@ -288,9 +288,13 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
 
     # now that model is created, set which layers use the replacement to start
     model_config.layer_hybrid_types = ['full_attention'] * model_config.num_hidden_layers
+    model_config.sliding_window_sizes = [0] * model_config.num_hidden_layers
     if cli_config.layer_hybrid_types is not None:
         for i, x in enumerate(cli_config.layer_hybrid_types):
             model_config.layer_hybrid_types[i] = 'replacement_attention' if x else 'full_attention'
+            # Also set sliding window size for StreamingLLM layers
+            if x:
+                model_config.sliding_window_sizes[i] = cli_config.sliding_window_size
 
     with torch.no_grad():
         layer_count = len(model.model.layers)
@@ -309,18 +313,16 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
                 # run teacher model
                 teacher_logits = model(input_ids).logits
 
-                # change to student model with a single GQA layer
-                old_sliding_window_sizes = model.config.sliding_window_sizes
-                model.config.sliding_window_sizes = [0] * layer_count
-                model.config.sliding_window_sizes[layer_id] = cli_config.sliding_window_size
+                # change to student model with a single additional StreamingLLM layer
+                old_sliding_window_size = model.config.sliding_window_sizes[layer_id]
                 old_layer_hybrid_type = model.config.layer_hybrid_types[layer_id]
+                model.config.sliding_window_sizes[layer_id] = cli_config.sliding_window_size
                 model.config.layer_hybrid_types[layer_id] = 'replacement_attention'
 
                 # run student model
                 student_logits = model(input_ids).logits
                 # change back to teacher model
-                #model.config.sink_sliding_head_mask[layer_id] = old_head_mask
-                model.config.sliding_window_sizes = old_sliding_window_sizes
+                model.config.sliding_window_sizes[layer_id] = old_sliding_window_size
                 model.config.layer_hybrid_types[layer_id] = old_layer_hybrid_type
 
                 student_logits = student_logits.masked_fill_(~attention_mask.unsqueeze(-1), -9999999)
