@@ -195,8 +195,8 @@ def worker_process(local_rank:int, world_size:int, *args, **kwargs):
 class CLI_Config:
     num_gpus:int|None = None
     ctxlen:int = 2048
-    micro_bsz:int = 32
-    max_iters:int = 4
+    micro_bsz:int = 4
+    max_iters:int = 32
     dataset_name:str = "robbiegwaldd/dclm-10B"
     model_path:str = 'Qwen/Qwen2-0.5B-Instruct' # FIXME - use 3b or make all this stuff configurable
     base_model_class_path:str = 'transformers.models.qwen2.modeling_qwen2.Qwen2ForCausalLM'
