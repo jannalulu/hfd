@@ -286,15 +286,18 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
         shuffle=True,
     )
 
-    # now that model is created, set which layers use the replacement to start
-    model_config.layer_hybrid_types = ['full_attention'] * model_config.num_hidden_layers
-    model_config.sliding_window_sizes = [0] * model_config.num_hidden_layers
+    # Original teacher configuration (always full attention)
+    original_layer_hybrid_types = ['full_attention'] * model_config.num_hidden_layers
+    original_sliding_window_sizes = [0] * model_config.num_hidden_layers
+
+    # Student base configuration (layers already converted to SWA from CLI)
+    student_base_layer_hybrid_types = ['full_attention'] * model_config.num_hidden_layers
+    student_base_sliding_window_sizes = [0] * model_config.num_hidden_layers
     if cli_config.layer_hybrid_types is not None:
         for i, x in enumerate(cli_config.layer_hybrid_types):
-            model_config.layer_hybrid_types[i] = 'replacement_attention' if x else 'full_attention'
-            # Also set sliding window size for StreamingLLM layers
+            student_base_layer_hybrid_types[i] = 'replacement_attention' if x else 'full_attention'
             if x:
-                model_config.sliding_window_sizes[i] = cli_config.sliding_window_size
+                student_base_sliding_window_sizes[i] = cli_config.sliding_window_size
 
     with torch.no_grad():
         layer_count = len(model.model.layers)
@@ -310,20 +313,17 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
                 labels = data['labels'].to(device)
                 attention_mask = data['attention_mask'].to(device=device, dtype=torch.bool)
 
-                # run teacher model
+                # Run teacher model (always original full attention)
+                model.config.layer_hybrid_types = original_layer_hybrid_types.copy()
+                model.config.sliding_window_sizes = original_sliding_window_sizes.copy()
                 teacher_logits = model(input_ids).logits
 
-                # change to student model with a single additional StreamingLLM layer
-                old_sliding_window_size = model.config.sliding_window_sizes[layer_id]
-                old_layer_hybrid_type = model.config.layer_hybrid_types[layer_id]
+                # Run student model (existing SWA layers + test layer_id)
+                model.config.layer_hybrid_types = student_base_layer_hybrid_types.copy()
+                model.config.sliding_window_sizes = student_base_sliding_window_sizes.copy()
                 model.config.sliding_window_sizes[layer_id] = cli_config.sliding_window_size
                 model.config.layer_hybrid_types[layer_id] = 'replacement_attention'
-
-                # run student model
                 student_logits = model(input_ids).logits
-                # change back to teacher model
-                model.config.sliding_window_sizes[layer_id] = old_sliding_window_size
-                model.config.layer_hybrid_types[layer_id] = old_layer_hybrid_type
 
                 student_logits = student_logits.masked_fill_(~attention_mask.unsqueeze(-1), -9999999)
                 teacher_logits = teacher_logits.masked_fill_(~attention_mask.unsqueeze(-1), -9999999)
