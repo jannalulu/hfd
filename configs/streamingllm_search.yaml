@@ -1,0 +1,34 @@
+# StreamingLLM Search Configuration
+# For automated search, run: python iterative_search.py -- -c configs/streamingllm_search.yaml
+# For manual search, run: python greedy_streamingllm.py -c configs/streamingllm_search.yaml
+
+# ===================================================================
+# MODEL CONFIGURATION
+# ===================================================================
+model_path: Qwen/Qwen2.5-3B-Instruct
+base_model_class_path: transformers.models.qwen2.modeling_qwen2.Qwen2ForCausalLM
+base_attention_class_path: transformers.models.qwen2.modeling_qwen2.Qwen2Attention
+base_config_class_path: transformers.models.qwen2.configuration_qwen2.Qwen2Config
+
+# ===================================================================
+# SEARCH PARAMETERS
+# ===================================================================
+#sliding_window_size: 256
+#num_gpus: 4
+#ctxlen: 2048
+#micro_bsz: 8
+#max_iters: 100  # Number of batches to evaluate per layer (increase for more accuracy)
+
+# ===================================================================
+# DATASET
+# ===================================================================
+dataset_name: robbiegwaldd/dclm-10B
+
+# ===================================================================
+# MANUAL SEARCH TRACKING (if not using iterative_search.py)
+# ===================================================================
+# layer_hybrid_types will be automatically set by iterative_search.py
+# For manual search, uncomment and update after each iteration:
+# layer_hybrid_types: [1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,1,1,0,1,0,1,0,0,0,0,0,1,1]
+# layer_hybrid_types: [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+# layer_hybrid_types: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
