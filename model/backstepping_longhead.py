@@ -4,31 +4,24 @@ from torch.utils.cpp_extension import load
 print('backstepping longhead mode with CUDA or HIP')
 
 CHUNK_LEN = 16
-if os.environ["architecture"] == 'hxa079':
-    HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
-    HEAD = int(os.environ["RWKV_HEAD"])
-elif os.environ["architecture"] == 'hxa07b':
-    HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
-    HEAD = int(os.environ["RWKV_HEAD"])
-else:
-    HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
-    HEAD = int(os.environ["RWKV_HEAD"])
 
-    print(f'headsize = {HEAD_SIZE} HEAD={HEAD}')
-    #exit()
-BATCH_SIZE = int(os.environ["RWKV_MIRCO_BSZ"])
+HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
+HEAD = int(os.environ["RWKV_HEAD"])
+
+print(f'headsize = {HEAD_SIZE} HEAD={HEAD}')
+
+BATCH_SIZE = int(os.environ["RWKV_MICRO_BSZ"])
 
 class RWKV7_longhead(th.autograd.Function):
     @staticmethod
     def forward(ctx, q,w,k,v,a,b,s0):
         B,T,H,C = w.shape
         assert T%CHUNK_LEN == 0
-        if not th.compiler.is_compiling():
-            assert hasattr(th.ops.wind_backstepping_longhead, 'forward'), 'Requires a load kernel from load_backstepping_longhead(head_size)'
-            assert all(i.dtype==th.bfloat16 for i in [w,q,k,v,a,b,s0])
-            assert all(i.is_contiguous() for i in [w,q,k,v,a,b,s0])
-            assert all(i.shape == w.shape for i in [w,q,k,v,a,b])
-            assert list(s0.shape) == [B,H,C,C]
+        assert hasattr(th.ops.wind_backstepping_longhead, 'forward'), 'Requires a load kernel from load_backstepping_longhead(head_size)'
+        assert all(i.dtype==th.bfloat16 for i in [w,q,k,v,a,b,s0])
+        assert all(i.is_contiguous() for i in [w,q,k,v,a,b,s0])
+        assert all(i.shape == w.shape for i in [w,q,k,v,a,b])
+        assert list(s0.shape) == [B,H,C,C]
         B,T,H,C = w.shape
         y = th.empty_like(v)
         sT = th.empty_like(s0)
@@ -44,9 +37,8 @@ class RWKV7_longhead(th.autograd.Function):
     def backward(ctx, dy, dsT):
         w,q,k,v,a,b,s,sa = ctx.saved_tensors
         B,T,H,C = w.shape
-        if not th.compiler.is_compiling():
-            assert all(i.dtype==th.bfloat16 for i in [dy,dsT])
-            assert all(i.is_contiguous() for i in [dy,dsT])
+        assert all(i.dtype==th.bfloat16 for i in [dy,dsT])
+        assert all(i.is_contiguous() for i in [dy,dsT])
 
         dv,ds0 = [th.empty_like(x) for x in [v,dsT]]
         dw,dq,dk,da,db = [th.zeros(B,T,H,C, device=w.device) for i in range(5)]

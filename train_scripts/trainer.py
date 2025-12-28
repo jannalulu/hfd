@@ -105,7 +105,7 @@ def create_arg_parser():
     parser.add_argument('--config_file', type=str,default='configs/test_hybrid.yaml', help='training config file')
     parser.add_argument('--preprocessed_data',type=str,nargs='+',help='preprocessed data directory')
     parser.add_argument('--raw_data',type=str,nargs='+',help='raw data directory')
-    parser.add_argument('--need_to_pad',action='store_true',default=False,help='whether to pad the input with other sample to fill the sample to max length')
+    parser.add_argument('--need_to_pack',action='store_true',default=False,help='whether to pack the input with other sample to fill the sample to max length')
     parser.add_argument('--output_dir', type=str, default='/data/rwkv/tmp',help='directory to save the trained model')
     parser.add_argument('--num_epochs', type=int, default=1, help='number of epochs to train the model')
     parser.add_argument('--max_seq_length', type=int, default=512, help='maximum sequence length to train the model')
@@ -130,7 +130,6 @@ def create_arg_parser():
     parser.add_argument('--adam_eps', type=float, default=1e-8, help='epsilon parameter in the Adam optimizer')
     parser.add_argument('--warmup_steps', type=int, default=50, help='warmup steps in the model')
     parser.add_argument('--epoch_begin', type=int, default=0, help='beginning epoch for the training')
-    parser.add_argument('--epoch_count', type=int, default=150, help='total number of epochs for the training')
     parser.add_argument('--epoch_save', type=int, default=1, help='number of epochs after which the model is saved')
     parser.add_argument('--max_epochs', type=int, default=150, help='maximum number of epochs for the training')
     parser.add_argument('--check_val_every_n_epoch', type=int, default=1, help='number of epochs after which the validation is checked')
@@ -142,7 +141,7 @@ def create_arg_parser():
     parser.add_argument('--gradient_clip_val', type=float, default=1.0, help='maximum gradient norm')
     parser.add_argument('--num_nodes', type=int, default=1, help='number of nodes for distributed training')
     parser.add_argument('--micro_bsz', type=int,default=2, help='micro batch size for training')
-    parser.add_argument('--real_bsz', type=int, help='real batch size for training')
+    parser.add_argument('--global_bsz', type=int, help='real batch size for training')
     parser.add_argument('--my_pile_stage', type=int, default=0, help='pile stage in the model')
     #parser.add_argument('--my_pile_edecay', type=float, default=0, help='pile exponential decay in the model')
     parser.add_argument('--weight_decay_final', type=float, default=-1, help='final weight decay in the model')
@@ -188,23 +187,16 @@ def create_arg_parser():
     #parser.add_argument('--deepspeed_lion_mode', type=int, default=0, help='Use Bitsandbytes 8bit optimizer AdamW')
     return parser
 
-def lr_schedule(args, step):
-    w_step = args.warmup_steps
-    if args.lr_final == args.lr_init or args.epoch_count == 0:
-        return args.lr_init
-    
-    decay_step = step
-    decay_total = args.epoch_count * args.epoch_steps
-    progress = (decay_step - w_step + 1) / (decay_total - w_step)
-    progress = min(1, max(0, progress))
-
-    if args.lr_final == 0 or args.lr_init == 0:  # linear decay
+def lr_schedule(args, progress, step):
+    if args.lr_final == args.lr_init: # or args.epoch_count == 0:
+        lr = args.lr_init
+    elif args.lr_final == 0 or args.lr_init == 0:  # linear decay
         lr = args.lr_init + (args.lr_final - args.lr_init) * progress
     else:  # exp decay
         lr = args.lr_init * math.exp(math.log(args.lr_final / args.lr_init) * pow(progress, 1))
 
-    if step < w_step:
-        lr = lr * (0.01 + 0.99 * step / w_step)
+    if step < args.warmup_steps:
+        lr = lr * (0.01 + 0.99 * step / args.warmup_steps)
     
     return lr
 
@@ -215,13 +207,16 @@ def weight_decay_schedule(args, progress):
 
 def on_train_batch_start(args, model_engine, global_step, epoch):
     real_step = global_step + args.epoch_begin * args.epoch_steps
+    max_epochs_trained_tokens = args.max_epochs * args.epoch_steps * args.global_bsz
+    if args.max_trained_tokens > 0:
+        max_trained_tokens = min(args.max_trained_tokens, max_epochs_trained_tokens)
+    progress = (global_step - args.warmup_steps + 1) / (max_trained_tokens - args.warmup_steps)
+    progress = min(1, max(0, progress))
 
     # LR schedule
-    lr = lr_schedule(args, real_step)
+    lr = lr_schedule(args, progress, real_step)
     
     # Weight decay schedule
-    progress = (real_step - args.warmup_steps + 1) / (args.epoch_count * args.epoch_steps - args.warmup_steps)
-    progress = min(1, max(0, progress))
     wd_now = weight_decay_schedule(args, progress)
 
     # 更新优化器参数
@@ -293,6 +288,11 @@ def on_train_batch_end(args, batch_idx, model_engine, teacher_engine, loss,
 
     real_step = batch_idx
     if real_step % args.save_per_batches == 0 and real_step > 0:
+        save_pth(args=args, model_engine=model_engine, epoch=epoch, real_step=real_step)
+
+    return current_time, pbar, trained_tokens
+
+def save_pth(args, model_engine, epoch, real_step):
         # 既存チェックポイントを整理（2世代残す）
         if os.path.exists(args.output_dir):
             if model_engine.local_rank == 0:
@@ -325,7 +325,6 @@ def on_train_batch_end(args, batch_idx, model_engine, teacher_engine, loss,
                 import traceback
                 traceback.print_exc()
 
-    return current_time, pbar, trained_tokens
 
 import torch.distributed as dist
 def setup_distributed():
@@ -458,8 +457,10 @@ def get_dataloaders(args, tokenizer):
             print(f'load preprocessed data from {args.preprocessed_data} done')
     elif args.raw_data is not None:
 
-        args.raw_data = args.raw_data[0].split(",")
+        if len(args.raw_data) == 1:
+            args.raw_data = args.raw_data[0].split(",")
         print(f'load raw data from {args.raw_data}')
+
         from data.raw_dataset import load_datasets_from_directories,TypedDataset,TypedStreamingCLMDataCollator
         all_ds,feature_types = load_datasets_from_directories(args.raw_data,tokenizer)
         typed_dataset = TypedDataset(all_ds, feature_types)
@@ -470,7 +471,7 @@ def get_dataloaders(args, tokenizer):
                                                   max_length=args.max_seq_length, 
                                                   min_length=args.max_seq_length, 
                                                   typed_dataset=typed_dataset,
-                                                  need_to_pad=args.need_to_pad)
+                                                  need_to_pack=args.need_to_pack)
         from torch.utils.data.distributed import DistributedSampler
         train_sampler = DistributedSampler(
             typed_dataset,

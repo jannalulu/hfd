@@ -15,7 +15,22 @@ except ImportError:
     print("Additionally, ensure you have at least version 2.2.0 of Triton installed:")
     print("pip install triton>=2.2.0")
     raise
-        
+
+
+def repeat_kv_BTHD(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    Repeat KV heads along the head dimension (GQA).
+    Input:  (B, T, H_kv, D)
+    Output: (B, T, H_kv * n_rep, D)
+    """
+    B, T, H_kv, D = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    # Expand head dim
+    hidden_states = hidden_states[:, :, :, None, :]  # (B, T, H_kv, 1, D)
+    hidden_states = hidden_states.expand(B, T, H_kv, n_rep, D)  # (B, T, H_kv, n_rep, D)
+    return hidden_states.reshape(B, T, H_kv * n_rep, D).contiguous()
+
 class RWKV7cAttention(torch.nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
@@ -102,7 +117,7 @@ class RWKV7cAttention(torch.nn.Module):
             www = torch.zeros(d_att)
             zigzag = torch.zeros(d_att)
             linear = torch.zeros(d_att)
-            linear_kv = torch.zeros(d_att)
+
             for n in range(d_att):
                 linear[n] = n / (d_att-1) - 0.5
                 zigzag[n] = ((n % N) - ((N-1) / 2)) / ((N-1) / 2)
@@ -155,15 +170,16 @@ class RWKV7cAttention(torch.nn.Module):
         cache_position,
         **kwargs
     ):
-        print("RWKV7cAttention.forward")
         x = hidden_states
         B, T, C = x.shape
         B, H, T, N = query.shape
         B, KVH, T, N = key.shape
 
+        # NOTE - would be more efficient if we were the ones applying RoPE here, since the parent model sends us B,H,T,N contiguous not B,T,H,N
+
         r = query.transpose(1,2).view(B,T,H,N)
-        k = repeat_kv(key, H // KVH).transpose(1,2).view(B,T,H,N)
-        v = repeat_kv(value, H // KVH).transpose(1,2) + ((x @ self.v1 @ self.v2) * self.D_MV_LoRA_Scaling).view(B,T,H,N)
+        k = repeat_kv_BTHD(key.transpose(1,2).view(B,T,KVH,N), H // KVH).view(B,T,H,N)
+        v = repeat_kv_BTHD(value.transpose(1,2).view(B,T,KVH,N), H // KVH).view(B,T,H,N) + ((x @ self.v1 @ self.v2) * self.D_MV_LoRA_Scaling).view(B,T,H,N)
 
         log_neglog_forget = (-F.softplus(-(self.w0 + F.tanh(x @ self.w1) @ self.w2)) - 0.5).view(B,T,H,N)
         log_forget = -log_neglog_forget.exp()
@@ -177,9 +193,9 @@ class RWKV7cAttention(torch.nn.Module):
         k = k * (1.0 - forget + iclr)
 
         # support for left-padding during inference
-        if attention_mask is not None:
+        if not self.training and attention_mask is not None:
             if len(attention_mask.shape) == 2:
-                v = v * attention_mask[:, -T:, None]
+                v = v * attention_mask[:, -T:, None, None]
             elif len(attention_mask.shape) == 4:
                 v = v * attention_mask[:, -1, -1, -T:, None, None]
 
@@ -190,7 +206,7 @@ class RWKV7cAttention(torch.nn.Module):
         z = -kk
         b = kk*iclr
         if self.training:
-            x = attn_backstepping_longhead(r, log_forget, k, v, z, b)[0]
+            x = attn_backstepping_longhead(r, log_neglog_forget, k, v, z, b)[0]
         else:
             x, vk_state = fused_recurrent_rwkv7(r, log_forget, k, v, z, b, scale=1.0, initial_state=vk_state, output_final_state=True, head_first=False)
             #shift_state = x[:, -1:]
@@ -202,10 +218,3 @@ class RWKV7cAttention(torch.nn.Module):
         x = x * g
 
         return x
-
-from model.wrap_hf import create_model_class, StaticStateCacheLayer
-RADRWKV7cHybridForCausalLM = create_model_class(
-    replacement_attention_class=RWKV7cAttention, 
-    base_model_path='transformers.models.qwen3.modeling_qwen3.Qwen3ForCausalLM', 
-    base_attention_path='transformers.models.qwen3.modeling_qwen3.Qwen3Attention',
-    replacement_cache_layer_class=StaticStateCacheLayer)

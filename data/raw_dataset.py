@@ -255,7 +255,7 @@ class TypedStreamingCLMDataCollator:
     min_length: int
     typed_dataset: TypedDataset
     pad_to_multiple_of: Optional[int] = None
-    need_to_pad: bool = True
+    need_to_pack: bool = True
     padding_side :str = "right"
     
     def concatenate_if_needed(self, text: str, is_conversation: bool) -> str:
@@ -285,7 +285,7 @@ class TypedStreamingCLMDataCollator:
         texts = []
         for example in examples:
             text = example['text'] if isinstance(example['text'], str) else example['text'][0]
-            processed_text = self.concatenate_if_needed(text, example['is_conversation']) if self.need_to_pad else text
+            processed_text = self.concatenate_if_needed(text, example['is_conversation']) if self.need_to_pack else text
             texts.append(processed_text)
 
         #print(texts)

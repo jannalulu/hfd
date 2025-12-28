@@ -1,0 +1,13 @@
+model:
+  model_class_path: model.modeling_qwen3_rwkv7c_hybrid.Qwen3RWKV7cHybridForCausalLM
+  config_class_path: model.configuration_qwen3_rwkv7c_hybrid.Qwen3RWKV7cHybridConfig
+  partial_config:
+    layer_hybrid_types: [
+      'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 
+      'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 
+      'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 
+      'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 
+      'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 
+      'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 
+      'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 'radlads_replacement_attention', 
+      ]

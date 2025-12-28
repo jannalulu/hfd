@@ -12,6 +12,8 @@ torch._dynamo.config.cache_size_limit = 256
 # print(f'parent_dir: {parent_dir}')
 is_wind_cuda = False
 
+from logger import print0 as print
+
 #from tritonbighead import RUN_CUDA_RWKV7g
 if os.environ["architecture"] == 'hxa079':
     from .backstepping_longhead import RUN_CUDA_RWKV7g

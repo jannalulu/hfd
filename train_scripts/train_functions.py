@@ -18,23 +18,25 @@ def rank0_print(*args, **kwargs):
 def train_step(model, batch, args, teacher_engine=None, tokenizer=None, global_step=0, log_path="attn_log.csv"):
     # print(batch)
     input_ids = batch['input_ids']
-    attention_mask = batch['attention_mask'].to(torch.int32)
-    if 'labels' in batch:
-        labels = batch['labels']
-        # 验证labels的维度
-        if labels.shape != input_ids.shape:
-            raise ValueError(f"Labels shape {labels.shape} doesn't match input_ids shape {input_ids.shape}")
-    else:
-        # 直接创建左移的labels
-        labels = torch.cat([input_ids[:, 1:], 
-                          torch.full((input_ids.shape[0], 1), 
-                                   tokenizer.pad_token_id, 
-                                   device=input_ids.device)], dim=1)
-        
+    attention_mask = batch['attention_mask'].to(torch.int32)      
 
-    
     # 5. 非SFT模式的处理
     if args.stage == 2:
+        if args.ce_weight > 0:
+            if 'labels' in batch:
+                labels = batch['labels']
+                # 验证labels的维度
+                if labels.shape != input_ids.shape:
+                    raise ValueError(f"Labels shape {labels.shape} doesn't match input_ids shape {input_ids.shape}")
+            else:
+                # 直接创建左移的labels
+                labels = torch.cat([input_ids[:, 1:], 
+                                torch.full((input_ids.shape[0], 1), 
+                                        tokenizer.pad_token_id, 
+                                        device=input_ids.device)], dim=1)
+        else:
+            labels = None
+
         teacher_logits, teacher_loss = get_teacher_outputs(teacher_engine, input_ids, attention_mask, labels, args)
         gc.collect()
         torch.cuda.empty_cache()
@@ -53,7 +55,7 @@ def train_step(model, batch, args, teacher_engine=None, tokenizer=None, global_s
         ##print('get student outputs')
         attention_hidden_states = []
         student_outputs = get_student_outputs(
-            model, args, input_ids, labels, attention_mask, attention_hidden_states=attention_hidden_states)
+            model, args, input_ids, None, attention_mask, attention_hidden_states=attention_hidden_states)
         #print('get_attn_loss')
         loss, kl_loss, student_ce_loss = get_attn_loss(model,
             args, attention_hidden_states=attention_hidden_states, step=global_step, log_path=log_path)
@@ -141,25 +143,24 @@ def train_step(model, batch, args, teacher_engine=None, tokenizer=None, global_s
 def get_attn_loss(model, args, attention_hidden_states, step=None, log_path="attn_log.csv"):
     raw_layer_losses, scaled_layer_losses, layer_scales = [], [], []
 
-    for (s_h, t_h) in [attention_hidden_states[i] for i in args.layers]:
+    #layers = range(len(attention_hidden_states))
+
+    s_h = []
+    t_h = []    
+    for (s_h_i, t_h_i) in attention_hidden_states: #[attention_hidden_states[i] for i in args.layers]:
         # Norm Scale Ratio for record
         with torch.no_grad():
-            s_norm = s_h.norm(dim=-1).mean()
-            t_norm = t_h.norm(dim=-1).mean()
+            s_norm = s_h_i.norm(dim=-1).mean()
+            t_norm = t_h_i.norm(dim=-1).mean()
             scale_ratio = (t_norm / (s_norm + 1e-8)).item()
             layer_scales.append(scale_ratio)
     
             #Raw MSELoss for record
-            raw_mse = F.mse_loss(s_h, t_h)
+            raw_mse = F.mse_loss(s_h_i, t_h_i)
             raw_layer_losses.append(raw_mse)
 
-    s_h = []
-    t_h = []
-    
-    for i in args.layers:
-        s_h_1, t_h_1 = attention_hidden_states[i]  # ここで (s_h, t_h) を取り出す
-        s_h.append( s_h_1 )
-        t_h.append( t_h_1 )
+        s_h.append( s_h_i )
+        t_h.append( t_h_i )
 
     #Smerky's stage1 method
     # t_norm = torch.linalg.vector_norm(t, dim=-1, keepdim=True) + 1e-12
@@ -188,9 +189,9 @@ def get_attn_loss(model, args, attention_hidden_states, step=None, log_path="att
             if step == 0:
                 header = (
                     ["step"]
-                    + [f"layer_{i}_rawMSE" for i in args.layers]
-                    + [f"layer_{i}_scaledMSE" for i in args.layers]
-                    + [f"layer_{i}_scale" for i in args.layers]
+                    + [f"layer_{i}_rawMSE" for i in range(len(raw_layer_losses))]
+                    + [f"layer_{i}_scaledMSE" for i in range(len(scaled_layer_losses))]
+                    + [f"layer_{i}_scale" for i in range(len(layer_scales))]
                 )
                 writer.writerow(header)
             row = (
@@ -357,45 +358,49 @@ def compute_kl_loss_ultra_efficient(student_outputs, teacher_logits, labels, arg
     kl_sum = torch.zeros(1, device=student_logits.device, requires_grad=True)
     total_tokens = 0
     
-    for i in range(0, seq_len, chunk_size):
-        end_idx = min(i + chunk_size, seq_len)
-        
-        # チャンク抽出
-        student_chunk = student_logits[:, i:end_idx, :]
-        teacher_chunk = teacher_logits[:, i:end_idx, :]
-        
-        # KL計算
-        log_probs = F.log_softmax(student_chunk, dim=-1)
-        
-        with torch.no_grad():
-            teacher_scaled = teacher_chunk / temperature
-            targets = F.softmax(teacher_scaled, dim=-1)
-        
-        kl_div = F.kl_div(log_probs, targets, reduction='none')
-        kl_per_token = kl_div.sum(dim=-1)  # [batch_size, chunk_size]
-        
-        # Attention mask適用
-        if attention_mask is not None:
-            mask_chunk = attention_mask[:, i:end_idx]
-            masked_kl = kl_per_token * mask_chunk
-            kl_sum = kl_sum + masked_kl.sum()
-            total_tokens += mask_chunk.sum().item()
-        else:
-            kl_sum = kl_sum + kl_per_token.sum()
-            total_tokens += kl_per_token.numel()
-        
-        # 中間テンソル削除
-        del student_chunk, teacher_chunk, log_probs, targets, kl_div, kl_per_token
-        if attention_mask is not None:
-            del mask_chunk, masked_kl
-        
-        #torch.cuda.empty_cache()
+    if args.kl_weight > 0:
+        for i in range(0, seq_len, chunk_size):
+            end_idx = min(i + chunk_size, seq_len)
+            
+            # チャンク抽出
+            student_chunk = student_logits[:, i:end_idx, :]
+            teacher_chunk = teacher_logits[:, i:end_idx, :]
+            
+            # KL計算
+            log_probs = F.log_softmax(student_chunk, dim=-1)
+            
+            with torch.no_grad():
+                teacher_scaled = teacher_chunk / temperature
+                targets = F.softmax(teacher_scaled, dim=-1)
+            
+            kl_div = F.kl_div(log_probs, targets, reduction='none')
+            kl_per_token = kl_div.sum(dim=-1)  # [batch_size, chunk_size]
+            
+            # Attention mask適用
+            if attention_mask is not None:
+                mask_chunk = attention_mask[:, i:end_idx]
+                masked_kl = kl_per_token * mask_chunk
+                kl_sum = kl_sum + masked_kl.sum()
+                total_tokens += mask_chunk.sum().item()
+            else:
+                kl_sum = kl_sum + kl_per_token.sum()
+                total_tokens += kl_per_token.numel()
+            
+            # 中間テンソル削除
+            del student_chunk, teacher_chunk, log_probs, targets, kl_div, kl_per_token
+            if attention_mask is not None:
+                del mask_chunk, masked_kl
+            
+            #torch.cuda.empty_cache()
     
     # 正規化（勾配保持）
     kl_loss = kl_sum / (total_tokens + 1e-6)
     
     # Cross entropy loss
-    student_cross_entropy_loss = student_outputs.loss
+    if args.ce_weight > 0:
+        student_cross_entropy_loss = student_outputs.loss
+    else:
+        student_cross_entropy_loss = 0.0
     
     # Combine losses
     loss = args.kl_weight * kl_loss + args.ce_weight * student_cross_entropy_loss
@@ -459,7 +464,7 @@ def configure_optimizer_stage2(model, args):
         optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0}]
     #print(optim_groups)
 
-    optimizer = AdamW(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps)
+    optimizer = AdamW(optim_groups, lr=args.lr_init, betas=(args.beta1, args.beta2), eps=args.adam_eps)
 
     return optimizer
 
@@ -490,7 +495,7 @@ def configure_optimizer(model, args):
             print(f'{n} LR Decay')
         else:
             lr_1x.add(n)
-            print(f'{n}')
+            print(f'{n} 1x LR')
 
         
     #exit()
@@ -508,6 +513,6 @@ def configure_optimizer(model, args):
     if args.weight_decay > 0:
         optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0}]
 
-    optimizer = AdamW(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps)
+    optimizer = AdamW(optim_groups, lr=args.lr_init, betas=(args.beta1, args.beta2), eps=args.adam_eps)
 
     return optimizer

@@ -104,7 +104,7 @@ if __name__ == '__main__':
     args.ce_weight = config['ce_weight']
     args.enable_AKL = config.get('enable_AKL', False)
     args.model_file = config['model_file']
-    args.real_bsz = args.train_batch_size
+    args.global_bsz = args.train_batch_size
     args.is_sft = config.get('is_sft', False)
     args.is_all_labels_kl = config.get('is_all_labels_kl', False)
     print(f'{transformer_model.config.num_hidden_layers}')
@@ -123,9 +123,10 @@ if __name__ == '__main__':
     for n,p in teacher_attn_module_list.named_parameters():
         p.requires_grad = False
 
+    # FIXME - this is incorrect when att_dim is larger
     os.environ["RWKV_HEAD"] = str(int(args.n_embd // args.head_size_a))
     os.environ["RWKV_HEAD_SIZE_A"] = str(int(args.head_size_a))
-    os.environ["RWKV_MIRCO_BSZ"] = str(int(args.micro_bsz))
+    os.environ["RWKV_MICRO_BSZ"] = str(int(args.micro_bsz))
 #     parser.add_argument('--quant_mode', type=str, default="int8", help='quant in peft mode except full')
 #     parser.add_argument('--peftmode', type=str, default="full", help='peftmode full,lora,dora,bone')
 #     parser.add_argument('--peft_r', type=int, default=32, help='peft block lora rank')
@@ -810,14 +811,6 @@ if __name__ == '__main__':
     # 创建管理器实例
     terminate = False
     teacher_attn_manager = TeacherAttnManager(model_engine, args.layers)
-
-    
-
-    # for i in range(30):
-    #     time.sleep(1)
-    #     gc.collect()
-    #     torch.cuda.empty_cache()
-    #     print(f'waiting {i}')
 
     pbar = None
     trained_tokens = 0

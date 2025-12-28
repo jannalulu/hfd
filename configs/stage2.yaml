@@ -1,0 +1,27 @@
+train:
+  stage: 2
+  wandb: recursalai-mi325x-node
+  wandb_run_name: hxa07c-qwen3-0.6b-stage2
+  max_trained_tokens: 600000000
+
+  teacher_hf: Qwen/Qwen3-0.6B-Base
+  output_dir: /home/rwkv/smerky/hfd/output/qwen3-0.6b-base/hxa07c-stage2
+
+  raw_data: ["/home/rwkv/smerky/qrwkv/data/mose/instruct","/home/rwkv/smerky/qrwkv/data/mose/raw"]
+
+  ckpt_file: /home/rwkv/smerky/hfd/output/qwen3-0.6b-base/hxa07c-stage1/epoch_0_step_6103/trainable_only_weights.pth
+
+  max_seq_length: 4096
+
+  gradient_clip_val: 1.0
+  grad_cp: 1
+  lr_init: 1e-5
+  lr_final: 1e-5
+  weight_decay: 0.001
+  
+  micro_bsz: 4
+  n_gpu_per_node: 8
+  n_nodes: 1
+
+  kl_weight: 1.0
+  ce_weight: 0.0
