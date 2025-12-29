@@ -1,4 +1,10 @@
-from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_only
+try:
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_only
+    HAS_LIGHTNING = True
+except ImportError:
+    HAS_LIGHTNING = False
+    rank_zero_info = print
+    rank_zero_only = lambda fn: fn
 
 import typing
 

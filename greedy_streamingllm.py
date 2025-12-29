@@ -20,8 +20,21 @@ import datasets
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Union
 import os
+import json
 
 from model.streaming_attention import StreamingAttention
+
+# lm-eval imports (lazy loaded when needed)
+lm_eval = None
+HFLM = None
+
+def load_lm_eval():
+    global lm_eval, HFLM
+    if lm_eval is None:
+        import lm_eval as _lm_eval
+        from lm_eval.models.huggingface import HFLM as _HFLM
+        lm_eval = _lm_eval
+        HFLM = _HFLM
 
 @dataclass
 class TokenizingCollator:
@@ -50,9 +63,11 @@ class TokenizingCollator:
             "labels": labels,
         }
 
-def worker_process(local_rank:int, world_size:int, *args, **kwargs):
+def worker_process(local_rank:int, world_size:int, cli_config, *args, **kwargs):
+    use_distributed = world_size > 1 and cli_config.eval_mode != 'lm_eval'
+
     try:
-        if world_size > 1:
+        if use_distributed:
             os.environ['MASTER_ADDR'] = 'localhost'
             os.environ['MASTER_PORT'] = '12355'
 
@@ -64,14 +79,14 @@ def worker_process(local_rank:int, world_size:int, *args, **kwargs):
                 device_id=local_rank,
             )
 
-        _worker_process(local_rank, world_size, *args, **kwargs)
+        _worker_process(local_rank, world_size, cli_config, *args, **kwargs)
     except Exception as e:
         if local_rank == 0:
             #print(f"Error in worker: {e}")
             import traceback
             print(f"Error in worker\n", traceback.format_exc())
 
-    if world_size > 1:      
+    if use_distributed:
         dist.barrier()
         if local_rank == 0:
             print("Tearing down process group...")
@@ -96,6 +111,13 @@ class CLI_Config:
     seed:int = 1337
     iterate:int = 1
     test:int = 0
+    eval_mode:str = 'kl_div'
+    tasks:list = field(default_factory=lambda: ['gsm8k'])
+    output_dir:str = 'layer_eval_results'
+    batch_size:int = 12
+    limit:int|None = None  # limit samples per task (None = all)
+    num_fewshot:int|None = None  # number of few-shot examples (None = task default)
+    dtype:str = 'bfloat16'  # model dtype: bfloat16, float16, float32
 
 
 def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
@@ -123,6 +145,8 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
     if local_rank == 0: print("loading config", cli_config.model_path)
     config_dict, unused_kwargs = PretrainedConfig.get_config_dict(cli_config.model_path, _from_auto=True)
     model_config = StreamingHybridConfig.from_dict(config_dict, **unused_kwargs)
+    # Set name_or_path so lm-eval tasks (like ruler) can find the tokenizer
+    model_config._name_or_path = cli_config.model_path
 
     # NOTE - entirely replacement attentions, and we will change the sliding window size as needed to simulate the original model
     model_config.layer_hybrid_types = ['radlads_replacement_attention'] * model_config.num_hidden_layers
@@ -132,7 +156,9 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
         model = StreamingHybridForCausalLM(model_config)
 
     if local_rank == 0: print("loading original model weights", cli_config.model_path)
-    base_model = AutoModelForCausalLM.from_pretrained(cli_config.model_path, device_map=device)
+    dtype_map = {'bfloat16': torch.bfloat16, 'float16': torch.float16, 'float32': torch.float32}
+    torch_dtype = dtype_map.get(cli_config.dtype, torch.bfloat16)
+    base_model = AutoModelForCausalLM.from_pretrained(cli_config.model_path, device_map=device, torch_dtype=torch_dtype)
     base_weights = base_model.state_dict()
     del base_model
 
@@ -148,6 +174,91 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
         print(tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0])
         return
 
+    # ===== LM-EVAL MODE =====
+    if cli_config.eval_mode == 'lm_eval':
+        load_lm_eval()
+        import csv
+        import fcntl
+        os.makedirs(cli_config.output_dir, exist_ok=True)
+
+        layer_count = model_config.num_hidden_layers
+        csv_path = os.path.join(cli_config.output_dir, "results.csv")
+
+        # Create HFLM wrapper once
+        lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=cli_config.batch_size)
+
+        def extract_metrics(results):
+            """Flatten lm-eval results dict into metric dict"""
+            metrics = {}
+            for task_name, task_results in results.items():
+                for metric_name, value in task_results.items():
+                    if metric_name != 'alias' and not metric_name.endswith('_stderr'):
+                        # Convert numpy types to float
+                        if hasattr(value, 'item'):
+                            value = value.item()
+                        metrics[f"{task_name}/{metric_name}"] = value
+            return metrics
+
+        def append_to_csv(layer_name, metrics):
+            """Append a row to CSV with file locking for multi-GPU safety"""
+            file_exists = os.path.exists(csv_path)
+            with open(csv_path, 'a', newline='') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                writer = csv.writer(f)
+                if not file_exists or os.path.getsize(csv_path) == 0:
+                    # Write header
+                    writer.writerow(['layer'] + list(metrics.keys()))
+                writer.writerow([layer_name] + list(metrics.values()))
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+        # Run baseline only on rank 0 (all layers with sliding_window=0 = full attention)
+        if local_rank == 0:
+            print(f"Running baseline evaluation (all full attention)...")
+            for layer_id2 in range(layer_count):
+                model.model.layers[layer_id2].self_attn.attn_replacement.sliding_window = 0
+
+            baseline_results = lm_eval.simple_evaluate(
+                model=lm,
+                tasks=cli_config.tasks,
+                limit=cli_config.limit,
+                num_fewshot=cli_config.num_fewshot,
+                random_seed=cli_config.seed,
+                metadata={'tokenizer': cli_config.model_path},  # For ruler tasks
+            )
+
+            metrics = extract_metrics(baseline_results['results'])
+            append_to_csv('baseline', metrics)
+            print(f"Baseline: {metrics}")
+
+        # Parallelize layer evaluation across GPUs (same pattern as KL divergence mode)
+        # Tests: what if ONLY layer X uses SWA? (all others = full attention)
+        for layer_id in range(local_rank, layer_count, world_size):
+            print(f"[GPU {local_rank}] Evaluating layer {layer_id}/{layer_count-1} with SWA (others full attn)...")
+
+            # Reset all to full attention
+            for layer_id2 in range(layer_count):
+                model.model.layers[layer_id2].self_attn.attn_replacement.sliding_window = 0
+
+            # Enable SWA for this layer only
+            model.model.layers[layer_id].self_attn.attn_replacement.sliding_window = cli_config.sliding_window_size
+
+            # Run evaluation
+            layer_results = lm_eval.simple_evaluate(
+                model=lm,
+                tasks=cli_config.tasks,
+                limit=cli_config.limit,
+                num_fewshot=cli_config.num_fewshot,
+                random_seed=cli_config.seed,
+                metadata={'tokenizer': cli_config.model_path},  # For ruler tasks
+            )
+
+            metrics = extract_metrics(layer_results['results'])
+            append_to_csv(layer_id, metrics)
+            print(f"[GPU {local_rank}] Layer {layer_id}: {metrics}")
+
+        return
+
+    # ===== KL DIVERGENCE MODE (original) =====
     dataset = datasets.load_dataset(cli_config.dataset_name)['train'] #, streaming=True)
 
     if local_rank == 0: print(f"model: {cli_config.model_path} dataset: {cli_config.dataset_name}")
