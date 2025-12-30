@@ -179,10 +179,12 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
         load_lm_eval()
         import csv
         import fcntl
+        from datetime import datetime
         os.makedirs(cli_config.output_dir, exist_ok=True)
 
         layer_count = model_config.num_hidden_layers
-        csv_path = os.path.join(cli_config.output_dir, "results.csv")
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        csv_path = os.path.join(cli_config.output_dir, f"results_{timestamp}.csv")
 
         # Create HFLM wrapper once
         lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=cli_config.batch_size)
