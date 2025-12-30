@@ -8,7 +8,8 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 def radlads_replacement_attention(module, query, key, value, attention_mask, **kwargs):
     # forward while removing underscores we added to certain kwargs
-    return module.attn_replacement(query, key, value, attention_mask, **{k.rstrip('_'):v for k,v in kwargs.items()}), None
+    cleaned_kwargs = {k.rstrip('_'):v for k,v in kwargs.items()}
+    return module.attn_replacement(query, key, value, attention_mask, **cleaned_kwargs), None
 
 from transformers.modeling_utils import AttentionInterface
 AttentionInterface.register('radlads_replacement_attention', radlads_replacement_attention)

@@ -27,14 +27,150 @@ from model.streaming_attention import StreamingAttention
 # lm-eval imports (lazy loaded when needed)
 lm_eval = None
 HFLM = None
+LM = None
+StreamingHFLM = None
 
 def load_lm_eval():
-    global lm_eval, HFLM
+    global lm_eval, HFLM, LM, StreamingHFLM
     if lm_eval is None:
         import lm_eval as _lm_eval
         from lm_eval.models.huggingface import HFLM as _HFLM
+        from lm_eval.api.model import LM as _LM
         lm_eval = _lm_eval
         HFLM = _HFLM
+        LM = _LM
+
+        # Define StreamingHFLM after HFLM is loaded
+        class _StreamingHFLM(_HFLM):
+            """Custom HFLM wrapper that properly initializes for wrapped models."""
+
+            def __init__(
+                self,
+                model,
+                tokenizer,
+                batch_size=12,
+                max_length=32768,
+                device="cuda",
+            ):
+                # Initialize LM parent class directly (skip HFLM's complex init)
+                _LM.__init__(self)
+
+                # Store model and tokenizer
+                self._model = model
+                self.tokenizer = tokenizer
+                self._config = model.config
+
+                # Required HFLM attributes
+                self._batch_size = int(batch_size)
+                self._max_length = max_length
+                self._device = torch.device(device) if isinstance(device, str) else device
+                self.backend = "causal"
+                self.trust_remote_code = True
+                self.truncation = False
+
+                # Token handling
+                if self.tokenizer.pad_token_id is None:
+                    self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+                self.vocab_size = self.tokenizer.vocab_size
+
+                # Additional HFLM attributes that may be accessed
+                self.add_bos_token = False
+                self.custom_prefix_token_id = None
+                self._prefix_token_id = self.tokenizer.bos_token_id or self.tokenizer.eos_token_id
+                self.logits_cache = True
+                self._rank = 0
+                self._world_size = 1
+                self.delta = None
+                self.peft = None
+                self.revision = "main"
+                self.batch_schedule = 1
+                self.batch_sizes = {}
+                self.max_batch_size = 64
+
+                # Additional attributes needed by HFLM methods
+                self.mixed_precision_dtype = None
+                self.softmax_dtype = None
+                self.think_end_token = None
+                self.chat_template_args = {}
+                self.pretrained = None
+                self.batch_size_per_gpu = batch_size
+                self.accelerator = None
+
+            @property
+            def batch_size(self):
+                return self._batch_size
+
+            @property
+            def max_length(self):
+                return self._max_length
+
+            @property
+            def model(self):
+                return self._model
+
+            @property
+            def device(self):
+                return self._device
+
+            @property
+            def config(self):
+                return self._config
+
+            @property
+            def eot_token_id(self):
+                return self.tokenizer.eos_token_id
+
+            @property
+            def prefix_token_id(self):
+                return self._prefix_token_id
+
+            @property
+            def max_gen_toks(self):
+                return 256
+
+            @property
+            def rank(self):
+                return self._rank
+
+            @property
+            def world_size(self):
+                return self._world_size
+
+            def tok_encode(self, string, left_truncate_len=None, add_special_tokens=None):
+                """Encode string to token ids."""
+                if add_special_tokens is None:
+                    add_special_tokens = False
+                encoding = self.tokenizer.encode(string, add_special_tokens=add_special_tokens)
+                if left_truncate_len:
+                    encoding = encoding[-left_truncate_len:]
+                return encoding
+
+            def tok_decode(self, tokens, skip_special_tokens=True):
+                """Decode token ids to string."""
+                return self.tokenizer.decode(tokens, skip_special_tokens=skip_special_tokens)
+
+            def _model_generate(self, context, max_length, stop, **generation_kwargs):
+                """Generate with proper handling of temperature and sampling kwargs."""
+                # Handle temperature (copied from working wrapper)
+                generation_kwargs["temperature"] = generation_kwargs.get("temperature", 0.0)
+                do_sample = generation_kwargs.get("do_sample", None)
+
+                # The temperature has to be a strictly positive float -- if it is 0.0, use greedy decoding strategies
+                if generation_kwargs.get("temperature") == 0.0 and do_sample is None:
+                    generation_kwargs["do_sample"] = do_sample = False
+
+                if do_sample is False and generation_kwargs.get("temperature") == 0.0:
+                    generation_kwargs.pop("temperature")
+
+                return self._model.generate(
+                    input_ids=context,
+                    max_length=max_length,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    use_cache=True,
+                    **generation_kwargs,
+                )
+
+        StreamingHFLM = _StreamingHFLM
 
 @dataclass
 class TokenizingCollator:
@@ -160,6 +296,8 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
     torch_dtype = dtype_map.get(cli_config.dtype, torch.bfloat16)
     base_model = AutoModelForCausalLM.from_pretrained(cli_config.model_path, device_map=device, torch_dtype=torch_dtype)
     base_weights = base_model.state_dict()
+    # Copy generation_config from base model (not included in state_dict)
+    model.generation_config = base_model.generation_config
     del base_model
 
     if local_rank == 0: print("moving original model weights", cli_config.model_path)
@@ -184,8 +322,8 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
         layer_count = model_config.num_hidden_layers
         csv_path = os.path.join(cli_config.output_dir, "results.csv")
 
-        # Create HFLM wrapper once
-        lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=cli_config.batch_size)
+        # Create HFLM wrapper once (using custom wrapper that handles generation properly)
+        lm = StreamingHFLM(model=model, tokenizer=tokenizer, batch_size=cli_config.batch_size, device=device)
 
         def extract_metrics(results):
             """Flatten lm-eval results dict into metric dict"""
