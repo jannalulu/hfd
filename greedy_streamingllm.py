@@ -254,6 +254,7 @@ class CLI_Config:
     limit:int|None = None  # limit samples per task (None = all)
     num_fewshot:int|None = None  # number of few-shot examples (None = task default)
     dtype:str = 'bfloat16'  # model dtype: bfloat16, float16, float32
+    run_timestamp:str = ''  # set automatically at runtime
 
 
 def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
@@ -319,8 +320,12 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
         import fcntl
         os.makedirs(cli_config.output_dir, exist_ok=True)
 
+        # Enable RULER dataset caching for consistent inputs across iterations
+        from ruler_cache import patch_ruler_caching
+        patch_ruler_caching(cache_dir="./ruler_cache", seed=cli_config.seed)
+
         layer_count = model_config.num_hidden_layers
-        csv_path = os.path.join(cli_config.output_dir, "results.csv")
+        csv_path = os.path.join(cli_config.output_dir, f"results_{cli_config.run_timestamp}.csv")
 
         # Create HFLM wrapper once (using custom wrapper that handles generation properly)
         lm = StreamingHFLM(model=model, tokenizer=tokenizer, batch_size=cli_config.batch_size, device=device)
@@ -484,11 +489,15 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
 
 if __name__ == '__main__':
     import sys
+    from datetime import datetime
     from config import parse_cmdline_configs
     cli_config, errors = parse_cmdline_configs(sys.argv[1:], CLI_Config)
     if errors != '':
         print(errors)
         exit(-1)
+
+    # Set timestamp once for all workers
+    cli_config.run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     if cli_config.num_gpus == 1:
         worker_process(0, 1, cli_config)
@@ -510,5 +519,5 @@ if __name__ == '__main__':
             worker_process,
             args=[cli_config.num_gpus, cli_config, ],
             nprocs=cli_config.num_gpus,
-            join=False, #True
+            join=True,
         )
