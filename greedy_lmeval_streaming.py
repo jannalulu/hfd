@@ -2,7 +2,7 @@ import torch, torch.nn as nn, torch.nn.functional as F
 from typing import Optional, Tuple, Union
 from transformers import Cache
 
-from model.wrap_hf import create_model_class, create_config_class
+from model.wrap_hf import create_model_class, create_config_class, class_name_and_module_from_path
 
 from transformers.models.qwen2.modeling_qwen2 import repeat_kv
 from accelerate import init_empty_weights
@@ -107,6 +107,7 @@ class CLI_Config:
     base_attention_class_path:str = 'transformers.models.qwen2.modeling_qwen2.Qwen2Attention'
     base_config_class_path:str = 'transformers.models.qwen2.configuration_qwen2.Qwen2Config'
     sliding_window_size:int = 256
+    sink_window_size:int = 1
     swa_layer_ids:list = field(default_factory=list)
     seed:int = 1337
     iterate:int = 1
@@ -114,7 +115,7 @@ class CLI_Config:
     eval_mode:str = 'kl_div'
     tasks:list = field(default_factory=lambda: ['gsm8k'])
     output_dir:str = 'layer_eval_results'
-    batch_size:int = 12
+    batch_size:int = 32
     limit:int|None = None  # limit samples per task (None = all)
     num_fewshot:int|None = None  # number of few-shot examples (None = task default)
     dtype:str = 'bfloat16'  # model dtype: bfloat16, float16, float32
@@ -131,16 +132,18 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
         tokenizer.pad_token = tokenizer.eos_token
 
     StreamingHybridForCausalLM = create_model_class(
-        StreamingAttention, 
-        cli_config.base_model_class_path,
-        cli_config.base_attention_class_path,
+       StreamingAttention, 
+       cli_config.base_model_class_path,
+       cli_config.base_attention_class_path,
     )
+    #StreamingHybridForCausalLM, _, _ = class_name_and_module_from_path(cli_config.base_model_class_path)
 
     StreamingHybridConfigParent = create_config_class(cli_config.base_config_class_path)
     class StreamingHybridConfig(StreamingHybridConfigParent):
-        def __init__(self, streaming_sliding_window:int|None = None, **kwargs):
+        def __init__(self, streaming_sliding_window:int|None = None, streaming_sink_window:int = 1, **kwargs):
             super().__init__(**kwargs)
             self.streaming_sliding_window = streaming_sliding_window
+            self.streaming_sink_window = streaming_sink_window
 
     if local_rank == 0: print("loading config", cli_config.model_path)
     config_dict, unused_kwargs = PretrainedConfig.get_config_dict(cli_config.model_path, _from_auto=True)
@@ -151,23 +154,12 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
     # NOTE - entirely replacement attentions, and we will change the sliding window size as needed to simulate the original model
     model_config.layer_hybrid_types = ['radlads_replacement_attention'] * model_config.num_hidden_layers
 
-    if local_rank == 0: print("instantiating customized model", cli_config.model_path)
-    with init_empty_weights():
-        model = StreamingHybridForCausalLM(model_config)
-
-    if local_rank == 0: print("loading original model weights", cli_config.model_path)
     dtype_map = {'bfloat16': torch.bfloat16, 'float16': torch.float16, 'float32': torch.float32}
     torch_dtype = dtype_map.get(cli_config.dtype, torch.bfloat16)
-    base_model = AutoModelForCausalLM.from_pretrained(cli_config.model_path, device_map=device, torch_dtype=torch_dtype)
-    base_weights = base_model.state_dict()
-    del base_model
-
-    if local_rank == 0: print("moving original model weights", cli_config.model_path)
-    model.load_state_dict(base_weights, assign=True)
-    del base_weights
 
     if local_rank == 0: print("loading customized model", cli_config.model_path)
     model = StreamingHybridForCausalLM.from_pretrained(cli_config.model_path, config=model_config, device_map=device, dtype=torch_dtype)
+
     model.eval()
 
     if cli_config.test:
@@ -181,12 +173,10 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
         load_lm_eval()
         import csv
         import fcntl
-        from datetime import datetime
         os.makedirs(cli_config.output_dir, exist_ok=True)
 
         layer_count = model_config.num_hidden_layers
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        csv_path = os.path.join(cli_config.output_dir, f"results_{timestamp}.csv")
+        csv_path = os.path.join(cli_config.output_dir, "results.csv")
 
         # Create HFLM wrapper once
         lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=cli_config.batch_size)
@@ -223,6 +213,8 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
 
             baseline_results = lm_eval.simple_evaluate(
                 model=lm,
+                #model_args="pretrained=Qwen/Qwen2.5-0.5B-Instruct,trust_remote_code=True,max_length=32768",
+                batch_size=cli_config.batch_size,
                 tasks=cli_config.tasks,
                 limit=cli_config.limit,
                 num_fewshot=cli_config.num_fewshot,
@@ -245,10 +237,12 @@ def _worker_process(local_rank:int, world_size:int, cli_config:CLI_Config):
 
             # Enable SWA for this layer only
             model.model.layers[layer_id].self_attn.attn_replacement.sliding_window = cli_config.sliding_window_size
+            model.model.layers[layer_id].self_attn.attn_replacement.sink_window = cli_config.sink_window_size
 
             # Run evaluation
             layer_results = lm_eval.simple_evaluate(
                 model=lm,
+                batch_size=cli_config.batch_size,
                 tasks=cli_config.tasks,
                 limit=cli_config.limit,
                 num_fewshot=cli_config.num_fewshot,
