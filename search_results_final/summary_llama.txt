@@ -1,0 +1,182 @@
+Iterative StreamingLLM Layer Search Summary
+================================================================================
+
+Total iterations: 28
+Final StreamingLLM layers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+
+Layer Importance (Selection Order):
+--------------------------------------------------------------------------------
+  1. Layer  2  (KL divergence: 0.0045589143)
+  2. Layer  5  (KL divergence: 0.0095072733)
+  3. Layer  8  (KL divergence: 0.0141009809)
+  4. Layer 14  (KL divergence: 0.0190825202)
+  5. Layer 12  (KL divergence: 0.0233579632)
+  6. Layer 13  (KL divergence: 0.0285174958)
+  7. Layer 10  (KL divergence: 0.0329059549)
+  8. Layer  9  (KL divergence: 0.0373312682)
+  9. Layer 15  (KL divergence: 0.0408971049)
+  10. Layer 16  (KL divergence: 0.0442383513)
+  11. Layer 26  (KL divergence: 0.0470310375)
+  12. Layer 24  (KL divergence: 0.0495044477)
+  13. Layer 22  (KL divergence: 0.0520139448)
+  14. Layer 27  (KL divergence: 0.0544193536)
+  15. Layer 17  (KL divergence: 0.0569318049)
+  16. Layer 25  (KL divergence: 0.0595634989)
+  17. Layer  6  (KL divergence: 0.0617612340)
+  18. Layer  7  (KL divergence: 0.0637791380)
+  19. Layer 21  (KL divergence: 0.0657154843)
+  20. Layer 20  (KL divergence: 0.0676644444)
+  21. Layer  3  (KL divergence: 0.0694739744)
+  22. Layer 19  (KL divergence: 0.0711661577)
+  23. Layer 23  (KL divergence: 0.0730215237)
+  24. Layer  4  (KL divergence: 0.0744159967)
+  25. Layer 18  (KL divergence: 0.0753555670)
+  26. Layer  1  (KL divergence: 0.0756247863)
+  27. Layer  0  (KL divergence: 0.0761490315)
+  28. Layer 11  (KL divergence: 0.0760801435)
+
+Iteration History:
+--------------------------------------------------------------------------------
+
+Iteration 1:
+  Layers before: []
+  Best layer found: 2
+  KL divergence: 0.0045589143
+
+Iteration 2:
+  Layers before: [2]
+  Best layer found: 5
+  KL divergence: 0.0095072733
+
+Iteration 3:
+  Layers before: [2, 5]
+  Best layer found: 8
+  KL divergence: 0.0141009809
+
+Iteration 4:
+  Layers before: [2, 5, 8]
+  Best layer found: 14
+  KL divergence: 0.0190825202
+
+Iteration 5:
+  Layers before: [2, 5, 8, 14]
+  Best layer found: 12
+  KL divergence: 0.0233579632
+
+Iteration 6:
+  Layers before: [2, 5, 8, 12, 14]
+  Best layer found: 13
+  KL divergence: 0.0285174958
+
+Iteration 7:
+  Layers before: [2, 5, 8, 12, 13, 14]
+  Best layer found: 10
+  KL divergence: 0.0329059549
+
+Iteration 8:
+  Layers before: [2, 5, 8, 10, 12, 13, 14]
+  Best layer found: 9
+  KL divergence: 0.0373312682
+
+Iteration 9:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14]
+  Best layer found: 15
+  KL divergence: 0.0408971049
+
+Iteration 10:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14, 15]
+  Best layer found: 16
+  KL divergence: 0.0442383513
+
+Iteration 11:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14, 15, 16]
+  Best layer found: 26
+  KL divergence: 0.0470310375
+
+Iteration 12:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14, 15, 16, 26]
+  Best layer found: 24
+  KL divergence: 0.0495044477
+
+Iteration 13:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14, 15, 16, 24, 26]
+  Best layer found: 22
+  KL divergence: 0.0520139448
+
+Iteration 14:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14, 15, 16, 22, 24, 26]
+  Best layer found: 27
+  KL divergence: 0.0544193536
+
+Iteration 15:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14, 15, 16, 22, 24, 26, 27]
+  Best layer found: 17
+  KL divergence: 0.0569318049
+
+Iteration 16:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14, 15, 16, 17, 22, 24, 26, 27]
+  Best layer found: 25
+  KL divergence: 0.0595634989
+
+Iteration 17:
+  Layers before: [2, 5, 8, 9, 10, 12, 13, 14, 15, 16, 17, 22, 24, 25, 26, 27]
+  Best layer found: 6
+  KL divergence: 0.0617612340
+
+Iteration 18:
+  Layers before: [2, 5, 6, 8, 9, 10, 12, 13, 14, 15, 16, 17, 22, 24, 25, 26, 27]
+  Best layer found: 7
+  KL divergence: 0.0637791380
+
+Iteration 19:
+  Layers before: [2, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 22, 24, 25, 26, 27]
+  Best layer found: 21
+  KL divergence: 0.0657154843
+
+Iteration 20:
+  Layers before: [2, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 21, 22, 24, 25, 26, 27]
+  Best layer found: 20
+  KL divergence: 0.0676644444
+
+Iteration 21:
+  Layers before: [2, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 20, 21, 22, 24, 25, 26, 27]
+  Best layer found: 3
+  KL divergence: 0.0694739744
+
+Iteration 22:
+  Layers before: [2, 3, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 20, 21, 22, 24, 25, 26, 27]
+  Best layer found: 19
+  KL divergence: 0.0711661577
+
+Iteration 23:
+  Layers before: [2, 3, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 26, 27]
+  Best layer found: 23
+  KL divergence: 0.0730215237
+
+Iteration 24:
+  Layers before: [2, 3, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+  Best layer found: 4
+  KL divergence: 0.0744159967
+
+Iteration 25:
+  Layers before: [2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+  Best layer found: 18
+  KL divergence: 0.0753555670
+
+Iteration 26:
+  Layers before: [2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+  Best layer found: 1
+  KL divergence: 0.0756247863
+
+Iteration 27:
+  Layers before: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+  Best layer found: 0
+  KL divergence: 0.0761490315
+
+Iteration 28:
+  Layers before: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+  Best layer found: 11
+  KL divergence: 0.0760801435
+
+================================================================================
+Final configuration: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
